@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<launch>
+  <!-- Launch arguments -->
+  <arg name="geoserver_url" default="http://localhost:8080/geoserver/wcs" description="GeoServer WCS endpoint URL"/>
+  <arg name="coverage_id" default="ne__ALS_DTM_CRS3035RES50000mN2650000E4700000"  description="Coverage ID for the GeoServer layer"/>
+  <arg name="preview_topic" default="/map_tif_preview" description="Topic name for publishing the map preview image"/>
+      
+  <!-- GeoServer client node -->
+  <node pkg="geoserver_client" exec="geoserver_map_tif_node" name="geoserver_map_tif_node" output="screen">
+    <param name="geoserver_url" value="$(var geoserver_url)"/>
+    <param name="coverage_id" value="$(var coverage_id)"/>
+    <param name="preview_topic" value="$(var preview_topic)"/>
+  </node>
+
+</launch>
+

@@ -1,0 +1,29 @@
+version: "3.9"
+
+services:
+  geoserver:
+    image: docker.osgeo.org/geoserver:2.28.0
+    container_name: geotiff_server
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - INSTALL_EXTENSIONS=true
+      - STABLE_EXTENSIONS=importer,gdal,css,ysld
+    volumes:
+      - ./data_dir:/opt/geoserver/data_dir
+      - ./tiffs:/opt/geoserver/data_dir/data/tiffs:ro
+
+  webdav:
+    image: bytemark/webdav
+    container_name: tiff_webdav
+    restart: unless-stopped
+    ports:
+      - "8081:80"
+    environment:
+      AUTH_TYPE: Basic
+      USERNAME: admin
+      PASSWORD: admin123
+    volumes:
+      - ./tiffs:/var/lib/dav
+
