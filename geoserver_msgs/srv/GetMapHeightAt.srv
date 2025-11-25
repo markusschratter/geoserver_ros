@@ -1,0 +1,7 @@
+float64 x               # EPSG:3035 Easting
+float64 y               # EPSG:3035 Northing
+
+---
+bool success
+float64 height          # Float32-height or NaN
+string message

@@ -1,0 +1,10 @@
+float64 x              # EPSG:3035 Easting
+float64 y              # EPSG:3035 Northing
+float64 size_m         # Size of the area(m)
+float64 resolution_m   # Resolution in meter/pixel
+string output_path     # Location where the tif will be stores
+
+---
+bool success
+string message
+
