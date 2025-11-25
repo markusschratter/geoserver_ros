@@ -32,7 +32,7 @@ public:
     // Declare parameters
     this->declare_parameter("geoserver_url", "http://localhost:8080/geoserver/wcs");
     this->declare_parameter("coverage_id", "ne__ALS_DTM_CRS3035RES50000mN2650000E4700000");
-    this->declare_parameter("preview_topic", "/map_tif_preview");
+    this->declare_parameter("preview_topic", "/map/tif_preview");
 
 
     geoserver_url_ = this->get_parameter("geoserver_url").as_string();
@@ -44,12 +44,12 @@ public:
 
     // Services
     map_tif_srv_ = this->create_service<geoserver_msgs::srv::GetMapTif>(
-      "/get_map_tif",
+      "/map/get_map_tif",
       std::bind(&GeoServerMapTifNode::handle_get_map_tif, this,
                 std::placeholders::_1, std::placeholders::_2));
 
     height_srv_ = this->create_service<geoserver_msgs::srv::GetMapHeightAt>(
-      "/get_height_at",
+      "/map/get_height_at",
       std::bind(&GeoServerMapTifNode::handle_get_height_at, this,
                 std::placeholders::_1, std::placeholders::_2));
 
@@ -168,10 +168,7 @@ private:
       return;
     }
     
-    // OGR Transform returns coordinates for EPSG:3035
-    // For Graz area: Easting should be ~4730000, Northing should be ~2670000
-    // Based on testing: OGR returns x_3035 ~4730000 (Easting), y_3035 ~2670000 (Northing)
-    // So we use them directly (no swap needed):
+
     double easting = x_3035;   // Easting (X coordinate in EPSG:3035)
     double northing = y_3035;  // Northing (Y coordinate in EPSG:3035)
     
@@ -189,7 +186,6 @@ private:
 
     // Build WCS request URL - exactly like the working curl command
     // Format: http://localhost:8080/geoserver/wcs?service=WCS&version=2.0.1&request=GetCoverage&coverageId=...&subset=X(...)&subset=Y(...)&format=image/tiff
-    // Format numbers as integers (no decimal point, no scientific notation)
     std::ostringstream url_stream;
     url_stream << std::fixed << std::noshowpoint << std::setprecision(0);
     url_stream << geoserver_url_
@@ -409,15 +405,30 @@ private:
     cv::Mat colored;
     cv::applyColorMap(img_u8, colored, cv::COLORMAP_VIRIDIS);
 
+    // Limit preview size to 2000x2000px while preserving aspect ratio
+    const int max_preview_size = 2000;
+    cv::Mat preview_img = colored;
+    if (colored.cols > max_preview_size || colored.rows > max_preview_size) {
+      double scale = std::min(
+        static_cast<double>(max_preview_size) / colored.cols,
+        static_cast<double>(max_preview_size) / colored.rows
+      );
+      int new_width = static_cast<int>(colored.cols * scale);
+      int new_height = static_cast<int>(colored.rows * scale);
+      cv::resize(colored, preview_img, cv::Size(new_width, new_height), 0, 0, cv::INTER_AREA);
+      RCLCPP_INFO(this->get_logger(), "Preview resized from %dx%d to %dx%d",
+                  colored.cols, colored.rows, new_width, new_height);
+    }
+
     // Convert to ROS message
     sensor_msgs::msg::Image::SharedPtr msg = cv_bridge::CvImage(
-      std_msgs::msg::Header(), "bgr8", colored).toImageMsg();
+      std_msgs::msg::Header(), "bgr8", preview_img).toImageMsg();
     msg->header.stamp = this->now();
     msg->header.frame_id = "map";
 
     preview_pub_->publish(*msg);
     RCLCPP_INFO(this->get_logger(), "Color preview (viridis) published on %s (size=%dx%d)",
-                preview_topic_.c_str(), colored.cols, colored.rows);
+                preview_topic_.c_str(), preview_img.cols, preview_img.rows);
   }
 
   void handle_get_height_at(
@@ -425,7 +436,7 @@ private:
     std::shared_ptr<geoserver_msgs::srv::GetMapHeightAt::Response> response)
   {
     if (current_dataset_ == nullptr || current_array_.empty()) {
-      std::string msg = "No GeoTIFF loaded. Call /get_map_tif first.";
+      std::string msg = "No GeoTIFF loaded. Call /map/get_map_tif first.";
       RCLCPP_WARN(this->get_logger(), "%s", msg.c_str());
       response->success = false;
       response->height = std::numeric_limits<double>::quiet_NaN();
@@ -438,10 +449,10 @@ private:
     double lat = request->x;  // latitude in degrees
     double lon = request->y;  // longitude in degrees
     
-    // Transform from WGS84 (Lat/Lon) to EPSG:3035
-    // OGR Transform expects (longitude, latitude) order and returns (x, y)
-    double x_3035 = lon;  // longitude first
-    double y_3035 = lat;  // latitude second
+    // Transform center point from WGS84 (Lat/Lon) to EPSG:3035
+    // OGR Transform expects (longitude, latitude) order for input
+    double x_3035 = lon;  // longitude first (X axis)
+    double y_3035 = lat;  // latitude second (Y axis)
     double z = 0.0;
     
     if (coord_transform_ == nullptr) {
@@ -452,7 +463,11 @@ private:
       return;
     }
     
-    if (!coord_transform_->Transform(1, &x_3035, &y_3035, &z)) {
+    // Transform: input is (lon, lat) in WGS84, output is (x, y) in EPSG:3035
+    // OGR Transform returns (Easting, Northing) for projected coordinates
+    int transform_result = coord_transform_->Transform(1, &x_3035, &y_3035, &z);
+    
+    if (!transform_result) {
       response->success = false;
       response->height = std::numeric_limits<double>::quiet_NaN();
       response->message = "Failed to transform coordinates from WGS84 to EPSG:3035.";
@@ -461,12 +476,9 @@ private:
       return;
     }
     
-    // OGR Transform returns (x, y) which for EPSG:3035 appears to be swapped
-    // Swap them: Easting should be ~4730000, Northing should be ~2670000 for Graz
-    double easting = y_3035;  // Easting (X coordinate in EPSG:3035)
-    double northing = x_3035; // Northing (Y coordinate in EPSG:3035)
-    double x = easting;
-    double y = northing;
+    // OGR Transform returns coordinates for EPSG:3035
+    double x = x_3035;   // Easting (X coordinate in EPSG:3035)
+    double y = y_3035;  // Northing (Y coordinate in EPSG:3035)
 
     // Transform geographic coordinates to pixel coordinates
     // GDAL transform: [origin_x, pixel_width, rotation, origin_y, rotation, pixel_height]
